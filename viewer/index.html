@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Borg Repo Viewer</title>
+    <link rel="shortcut icon" href="/viewer/cloud-outline.ico">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/vuetify@3.5.9/dist/vuetify.min.css">
+</head>
+<body>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/vuetify@3.5.9/dist/vuetify.min.js"></script>
+    <script type="module" src="main.js"></script>
+    <div id="app">
+        <v-layout class="rounded rounded-md">
+            <v-app-bar title="Borg Repo Viewer"></v-app-bar>
+        
+            <!-- <v-navigation-drawer>
+                <v-list>
+                    <v-list-item title="Navigation drawer"></v-list-item>
+                </v-list>
+            </v-navigation-drawer> -->
+        
+            <v-main class="d-flex align-center justify-center">
+                <div style="padding-top: 8px;">
+                    <template v-if="account != null">
+                        Du bist aktuell angemeldet als: {{ account.login }} <v-btn @click="handleLogoutClick" variant="tonal">Abmelden</v-btn>
+
+                        <br><br>
+                        <p>Hinzugefügte Repo-Login-Daten:</p>
+                        <ul>
+                            <li v-if="secureMountData.length == 0">keine</li>
+                            <li v-for="repo in secureMountData" :key="repo.repo">
+                                {{ repo.repo }}
+                            </li>
+                            <li>
+                                <v-btn @click="showAddRepoDataDialog = true">Hinzufügen</v-btn>
+                            </li>
+                        </ul>
+                        <v-dialog v-model="showAddRepoDataDialog" width="auto">
+                            <v-card title="Repo-Daten hinzufügen" max-width="400">
+                                <v-card-text>
+                                    Hinweis: die eingegebenen Daten können erst beim Erstellen eines Mounts überprüft werden.<br>
+                                    <v-text-field v-model="repoModel.url" label="Repo-URL (ssh://.../path)" density="compact"></v-text-field>
+                                    <v-text-field type="password" v-model="repoModel.pp" label="Repo-Passphrase" density="compact"></v-text-field>
+                                    <v-btn @click="handleAddRepoDataDialogSave">Speichern</v-btn>
+                                </v-card-text>
+                            </v-card>
+                        </v-dialog>
+                        <br>
+
+                        <p>Aktuelle Mounts:</p>
+                        <ul>
+                            <li v-if="currentMounts.length == 0">keine</li>
+                            <li v-for="mount in currentMounts" :key="mount.path">
+                                {{ mount.path }} -> {{ mount.repo }}
+                                <v-btn @click="setCurrentPath('/' + mount.path)">Anschauen</v-btn>
+                                <v-btn @click="umount(mount.path)">Umount</v-btn>
+                            </li>
+                            <li>
+                                <v-btn @click="showCreateMountDialog = true">Aktivieren</v-btn>
+                            </li>
+                        </ul>
+                        <v-dialog v-model="showCreateMountDialog" width="auto">
+                            <v-card title="Repo zum Mounten auswählen" max-width="400">
+                                <v-card-text>
+                                    <v-select :item-props="(data) => ({ title: data.repo })" :items="secureMountData" v-model="selectedRepoInfoToMount"></v-select>
+                                    <v-btn @click="handleCreateMountClick">Mounten</v-btn>
+                                </v-card-text>
+                            </v-card>
+                        </v-dialog>
+                        <div v-if="loadingMounting" style="margin-top: 12px;">
+                            <v-progress-circular indeterminate></v-progress-circular> Mount wird verarbeitet...
+                        </div>
+
+                        <div v-if="currentPath != '~'">
+                            <hr style="margin-top: 16px;">
+                            <p v-if="downloadingFiles.length > 0">Lädt aktuell herunter: {{ downloadingFiles.join(", ") }}</p>
+                            <div v-if="loadingCurrentPathData" style="margin-top: 12px;">
+                                <v-progress-circular indeterminate></v-progress-circular> Lädt Dateien...
+                            </div>
+                            <div v-else>
+                                <ul>
+                                    <li v-if="Array.from(currentPath).filter((c) => c == '/').length > 1"><v-btn @click="goUp()">nach oben</v-btn></li>
+                                    <li v-for="entry in currentPathData">
+                                        {{ entry.filename }} <span v-if="entry.file">({{ formatBytes(entry.size) }}) </span>
+                                        <v-btn v-if="entry.dir" @click="setCurrentPath('/' + entry.full_path)">CD</v-btn>
+                                        <v-btn v-if="entry.file" @click="showFile(entry.full_path, entry.size)">View</v-btn>
+                                        <v-btn v-if="entry.file" @click="downloadFile('/access/' + entry.full_path + '?gzip')">DL</v-btn>
+                                        <span v-if="entry.lnk">-> {{ entry.lnk }}</span>
+                                    </li>
+                                </ul>
+                            </div>
+                            <v-dialog v-model="showFileContentDialog" width="auto">
+                                <v-card :title="'Datei: ' + selectedFileToShow" max-width="1920">
+                                    <v-card-text>
+                                        <code class="v-code" v-html="selectedFileContent"></code>
+                                    </v-card-text>
+                                </v-card>
+                            </v-dialog>
+                        </div>
+                    </template>
+                    <template v-else>
+                        Du bist aktuell nicht angemeldet.<br><br>
+                        <v-card title="Anmeldung" style="max-width: 500px;">
+                            <v-card-text>
+                                <v-text-field v-model="loginModel.login" label="Login" :disabled="loadingLogin" density="compact"></v-text-field>
+                                <v-text-field type="password" v-model="loginModel.pw" label="Passwort" :disabled="loadingLogin" density="compact"></v-text-field>
+                                <v-btn @click="handleLoginClick" :disabled="loadingLogin">Anmelden</v-btn>
+                            </v-card-text>
+                        </v-card>
+                        <div v-if="loadingLogin" style="margin-top: 12px;">
+                            <v-progress-circular indeterminate></v-progress-circular> Meldet an...
+                        </div>
+                        <div v-if="loginError != null" style="margin-top: 12px;">
+                            <p>Fehler bei der Anmeldung. ({{ loginError }})</p>
+                        </div>
+                    </template>
+                </div>
+            </v-main>
+        </v-layout>
+    </div>
+</body>
+</html>

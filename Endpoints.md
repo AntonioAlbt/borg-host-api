@@ -13,4 +13,4 @@ All other endpoints require authentication with the header `Authorization: Beare
   - optional params for file view: `?text` - return content in json as text, `?download` - return plain file content, `?gzip` - return only gzip-ed content
   - request with OPTIONS method to get stat info of path
 
-- mounts timeout after 10 minutes after last usage (see /get/mounts output)
+- mounts timeout after 5 minutes after last usage (see /get/mounts output)

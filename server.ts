@@ -63,6 +63,10 @@ function getUserFromId(uid: number) {
     return db.query("SELECT * FROM users WHERE uid = ?;").get(uid)
 }
 
+function deleteToken(token: string) {
+    db.query("DELETE FROM tokens WHERE token = ?;").run(token);
+}
+
 async function createMountPath(uid: number) {
     const path = "/tmp/borghostapi_" + generateCode(16) + "_" + uid + "_" + Date.now();
     await mkdir(path, { recursive: true });
@@ -144,7 +148,7 @@ function trimPrefix(input: string) {
     else return input;
 }
 
-const umountTimeout = 10 * 60 * 1000;
+const umountTimeout = 5 * 60 * 1000;
 function refreshTimeout(path: string) {
     const p = trimPrefix(path);
     if (mountTimeoutTasks.has(p)) {
@@ -206,6 +210,9 @@ const server = Bun.serve({
 
         if (url.pathname == "/auth/check") {
             return new Response(JSON.stringify({ ...auth, owner: { ...(getUserFromId(auth.owner) as any), pw_sha512: undefined } }));
+        } else if (url.pathname == "/auth/remove-token") {
+            deleteToken(auth.token);
+            return json({success: true});
         } else if (url.pathname == "/get/admin/all-mounts") {
             return json({ mounts: (await getActiveBorgMounts()).map((p) => ({ path: p, repo: tempMountData.get(p) ?? null, access_ms: lastMountAccess.get(p)?.getTime() ?? null, umount_in_ms: mountTimeoutTasks.get(p)?.timeLeft() })) });
         } else if (url.pathname == "/get/mounts") {
@@ -239,7 +246,7 @@ const server = Bun.serve({
             const success = await doUmount(data.path);
             return json({ success });
         } else if (url.pathname.startsWith("/access")) {
-            const repoPath = url.pathname.split("/").slice(2);
+            const repoPath = decodeURI(url.pathname).split("/").slice(2);
             if (!(await getActiveBorgMountsForUid(auth.owner)).includes(repoPath[0])) throw Error("unknown path");
 
             refreshTimeout(repoPath[0]);
@@ -284,7 +291,8 @@ const server = Bun.serve({
                     });
                 })));
             } else if (finfo.isFile()) {
-                const seemsLikeText = (await $`/usr/bin/file --mime ${path}`.text()).includes(": text/");
+                const mimeType = await $`/usr/bin/file --mime ${path}`.text(); // output e.g.: /tmp/.../file: application/json; encoding=utf-8
+                const seemsLikeText = mimeType.includes("text/") || ["application/json", "application/ld+json", "application/x-httpd-php", "application/x-sh", "application/xhtml+xml", "application/xml"].some((mime) => mimeType.includes(mime));
                 if (url.searchParams.has("text")) return json({ text_content: await Bun.file(path).text(), seems_like_text: seemsLikeText });
                 if (url.searchParams.has("download")) return new Response(Bun.file(path));
                 if (url.searchParams.has("gzip")) return new Response(Bun.gzipSync(await Bun.file(path).arrayBuffer()));
