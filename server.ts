@@ -221,7 +221,7 @@ const server = Bun.serve({
             const data = await getReqData(req);
             if (!data.repo || !data.passphrase) throw Error("invalid repo data");
             const repoUrl = new URL(data.repo);
-            if (repoUrl.protocol != "ssh:") throw Error("invalid repo url");
+            if (repoUrl.protocol != "ssh:" && repoUrl.protocol != "file:") throw Error("invalid repo url");
             const path = await createMountPath(auth.owner);
             const borgshell = $`/usr/bin/borg --log-json mount ${data.repo} ${path}`.env({ BORG_PASSPHRASE: data.passphrase })//.quiet();
             const borgshellOut = await borgshell;
