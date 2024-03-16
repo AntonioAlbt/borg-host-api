@@ -43,7 +43,12 @@ function authenticate(req: Request) {
     if (!auth) return false;
     const token = auth.split(" ")[1];
     if (!token) return false;
-    const res = db.query("SELECT * FROM tokens WHERE token = ?;").get(token) as Token;
+    const res = db.query("SELECT * FROM tokens WHERE token = ?;").get(token) as Token | null;
+    return res;
+}
+
+function checkToken(token: string) {
+    const res = db.query("SELECT * FROM tokens WHERE token = ?;").get(token) as Token | null;
     return res;
 }
 
@@ -104,6 +109,7 @@ async function doUmount(path: string) {
         tempMountData.delete(p);
         mountTimeoutTasks.delete(p);
         lastMountAccess.delete(p);
+        server.publish("mounts-" + path.split("_")[1], JSON.stringify({ event: "umount", path: path, success }));
     }
     return success;
 }
@@ -127,7 +133,7 @@ async function setIdMapping(theId: string, repo?: string) {
 }
 
 function json(object: any, status: number = 200) {
-    return Response.json(object, { status });
+    return Response.json(object, { status, headers: { "Access-Control-Allow-Origin": "*", "Access-Control-Max-Age": (1 * 24 * 60 * 60).toString() } });
 }
 
 function setTimeoutWithTimeLeft(callback: Bun.TimerHandler, delay: number) {
@@ -184,6 +190,9 @@ Object.entries(idRepoMap).forEach((val) => { if (!usedIds.includes(val[0])) setI
 // --- start server ---
 const server = Bun.serve({
     async fetch(req) {
+        if (req.method == "OPTIONS") {
+            return new Response("", { headers: { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "*", "Access-Control-Allow-Headers": "*", "Access-Control-Max-Age": (1 * 24 * 60 * 60).toString() } })
+        }
         const url = new URL(req.url);
         if (url.pathname == "/auth/login") {
             const data = await getReqData(req);
@@ -198,18 +207,25 @@ const server = Bun.serve({
             const uid = checkLogin(login, pwHash);
             if (uid == false) throw Error("invalid auth");
             const token = createNewToken(uid, appName, timestamp);
-            return new Response(JSON.stringify({token, timestamp}), { headers: { "content-type": "application/json" } });
-        } if (url.pathname.startsWith("/viewer/")) {
+            return json({token, timestamp});
+        } else if (url.pathname.startsWith("/viewer/")) {
             return new Response(Bun.file("viewer/" + url.pathname.substring("/viewer/".length)));
         } else if (url.pathname == "/" || url.pathname == "") {
             return Response.redirect("/viewer/index.html", 301);
+        } else if (url.pathname.startsWith("/watch/mounts/")) {
+            const token = url.pathname.substring("/watch/mounts/".length)
+            const check = checkToken(token)
+            if (!check) return json({ error: "no auth" }, 401);
+
+            if (server.upgrade(req, { data: { opener: "mount", token: check.token, uid: check.owner } })) return json({ success: true });
+            return json({ error: "failed to upgrade to websocket" });
         }
 
         const auth = authenticate(req);
-        if (auth == false) return json({error: "no auth"}, 401);
+        if (!auth) return json({error: "no auth"}, 401);
 
         if (url.pathname == "/auth/check") {
-            return new Response(JSON.stringify({ ...auth, owner: { ...(getUserFromId(auth.owner) as any), pw_sha512: undefined } }));
+            return json({ ...auth, owner: { ...(getUserFromId(auth.owner) as any), pw_sha512: undefined } });
         } else if (url.pathname == "/auth/remove-token") {
             deleteToken(auth.token);
             return json({success: true});
@@ -233,9 +249,12 @@ const server = Bun.serve({
                         .filter((m) => m.startsWith("{")).map((l) => JSON.parse(l).msgid)[0],
                 });
             } else {
+                const accessTime = new Date();
+                server.publish("mounts-" + auth.owner, JSON.stringify({ event: "mount", repo: data.repo, path: trimPrefix(path), access_ms: accessTime.getTime(), umount_in_ms: umountTimeout }));
+
                 tempMountData.set(trimPrefix(path), data.repo);
                 mountTimeoutTasks.set(trimPrefix(path), setTimeoutWithTimeLeft(() => doUmount(path), umountTimeout));
-                lastMountAccess.set(trimPrefix(path), new Date());
+                lastMountAccess.set(trimPrefix(path), accessTime);
                 setImmediate(() => setIdMapping(trimPrefix(path), data.repo));
                 return json({ success: true, path: trimPrefix(path) });
             }
@@ -306,6 +325,18 @@ const server = Bun.serve({
         return new Response("not found", { status: 404 });
     },
     error: (err) => json({ error: err.message }, 500),
+    websocket: {
+        message(ws, message) {
+            console.log("- message from websocket " + ws.remoteAddress + ": " + message)
+        },
+        open(ws) {
+            const data = ws.data as { opener: string, uid: number, token: string } | undefined
+            if (data && data.opener == "mount") {
+                ws.subscribe("mounts-" + data.uid)
+                ws.send(JSON.stringify({ event: "subscribed", to: "mounts-" + data.uid }))
+            }
+        },
+    },
 });
 
 console.log("Server started on " + server.hostname + ":" + server.port)
