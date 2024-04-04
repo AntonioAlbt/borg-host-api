@@ -177,3 +177,4 @@ dist
 # project specific
 /auth.db
 /id-repo-cache.json
+/test-user.json

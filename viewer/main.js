@@ -10,6 +10,11 @@ createApp({
             loginModel: { login: "", pw: "" },
             loadingLogin: false,
             loginError: null,
+            showConfirm2FADialog: false,
+            tempToken: null,
+            selected2FAMethod: null,
+            input2FACode: "",
+
             currentMounts: [],
             secureMountData: [],
             currentPath: "~",
@@ -24,6 +29,9 @@ createApp({
             selectedFileToShow: null,
             selectedFileContent: null,
             downloadingFiles: [],
+            passkeys: [],
+            show2FACodeDialog: false,
+            known2FACodeData: null,
         }
     },
     mounted() {
@@ -32,13 +40,7 @@ createApp({
 
         const func = () => {
             if (this.account == null) return
-            this.authedFetch("/get/mounts").then((data) => {
-                if (!data.error) {
-                    this.currentMounts = data.mounts
-                } else {
-                    this.currentMounts = []
-                }
-            })
+            this.updateMounts()
         };
         setInterval(func, 30 * 1000)
 
@@ -47,11 +49,38 @@ createApp({
                 if (data.error) {
                     window.localStorage.setItem("account", "null")
                     this.account = null
-                } else func()
+                } else {
+                    func()
+                    this.authedFetch("/get/passkeys").then((data) => {
+                        if (!data.error) {
+                            this.passkeys = data.passkeys
+                        } else {
+                            this.passkeys = []
+                        }
+                    })
+                }
             })
         }
     },
     methods: {
+        updateMounts() {
+            this.authedFetch("/get/mounts").then((data) => {
+                if (!data.error) {
+                    this.currentMounts = data.mounts
+                } else {
+                    this.currentMounts = []
+                }
+            })
+        },
+        updatePasskeys() {
+            this.authedFetch("/get/passkeys").then((data) => {
+                if (!data.error) {
+                    this.passkeys = data.passkeys
+                } else {
+                    this.passkeys = []
+                }
+            })
+        },
         handleLoginClick() {
             this.loadingLogin = true;
             fetch("/auth/login", { method: "POST", body: JSON.stringify({ ...this.loginModel, appname: "BorgRepoViewer-Web" }) })
@@ -63,18 +92,17 @@ createApp({
                     } else if (json.token) {
                         this.account = { login: this.loginModel.login, token: json.token }
                         window.localStorage.setItem("account", JSON.stringify(this.account))
+                    } else if (json["2fa"]) {
+                        this.showConfirm2FADialog = true;
+                        this.tempToken = json.tempToken;
                     }
                 }).then((_) => this.loadingLogin = false).catch((err) => {
                     this.loadingLogin = false
                     this.loginError = JSON.stringify(err)
-                }).then((_) =>
-                    this.authedFetch("/get/mounts").then((data) => {
-                        if (!data.error) {
-                            this.currentMounts = data.mounts
-                        } else {
-                            this.currentMounts = []
-                        }
-                    }))
+                }).then((_) => {
+                    if (!this.account) return;
+                    return this.updateMounts()
+                })
         },
         handleLogoutClick() {
             this.loadingLogin = true;
@@ -110,24 +138,12 @@ createApp({
         handleCreateMountClick() {
             this.showCreateMountDialog = false
             this.loadingMounting = true
-            this.authedFetch("/do/mount", this.selectedRepoInfoToMount, "POST").then((_) => this.authedFetch("/get/mounts").then((data) => {
-                if (!data.error) {
-                    this.currentMounts = data.mounts
-                } else {
-                    this.currentMounts = []
-                }
-            })).then((_) => this.loadingMounting = false)
+            this.authedFetch("/do/mount", this.selectedRepoInfoToMount, "POST").then((_) => this.updateMounts()).then((_) => this.loadingMounting = false)
         },
         umount(path) {
             this.loadingMounting = true
             if (this.currentPath.includes(path)) this.setCurrentPath("~")
-            this.authedFetch("/do/umount", { path }, "POST").then((_) => this.authedFetch("/get/mounts").then((data) => {
-                if (!data.error) {
-                    this.currentMounts = data.mounts
-                } else {
-                    this.currentMounts = []
-                }
-            })).then((_) => this.loadingMounting = false)
+            this.authedFetch("/do/umount", { path }, "POST").then((_) => this.updateMounts()).then((_) => this.loadingMounting = false)
         },
         showFile(path, size) {
             this.selectedFileToShow = path.split("/")[path.split("/").length - 1]
@@ -218,6 +234,95 @@ createApp({
         base64ToBytes(base64) {
             const binString = atob(base64);
             return Uint8Array.from(binString, (m) => m.codePointAt(0));
+        },
+
+        async handleRegisterPasskey() {
+            const { startRegistration } = SimpleWebAuthnBrowser;
+            const resp = await this.authedFetch("/webauthn/registration/options");
+
+            let attResp;
+            try {
+                // Pass the options to the authenticator and wait for a response
+                attResp = await startRegistration(resp);
+            } catch (error) {
+                console.error(error);
+                alert("Fehler beim Registrieren des Passkeys! Abbruch.");
+                return;
+            }
+
+            const name = prompt("Bitte gebe einen Namen für deinen Passkey ein:") ?? "Unbenannter Passkey von " + navigator.userAgent.split(" ").at(-1);
+
+            const verifData = await this.authedFetch("/webauthn/registration/handle", {...attResp, name}, "POST");
+
+            if (verifData.verified) {
+                alert("Erfolgreich hinzugefügt!");
+                if (this.passkeys.length == 0) {
+                    this.updateMounts()
+                }
+                this.updatePasskeys();
+            } else {
+                alert("Server-Fehler beim Registrieren des Passkeys!");
+            }
+        },
+        async removePasskey(id) {
+            if (!confirm("Passkey \"" + id + "\" wirklich entfernen?")) return;
+            const resp = await this.authedFetch("/remove/passkey/" + id);
+            if (resp.success) {
+                alert("Erfolgreich entfernt!");
+            } else {
+                alert("Fehler beim Entfernen!");
+            }
+            this.updatePasskeys();
+        },
+        async show2FACode() {
+            const resp = await this.authedFetch("/webauthn/2fa-code");
+            if (resp.code) {
+                this.show2FACodeDialog = true;
+                this.known2FACodeData = resp.code;
+            } else {
+                alert("Fehler beim Abfragen.");
+            }
+        },
+        async handlePasskeyLogin() {
+            const { startAuthentication } = SimpleWebAuthnBrowser;
+            const resp = await fetch("/auth/login/2fa/webauthn/options", { headers: { Authorization: "Bearer " + this.tempToken } });
+
+            let attResp;
+            try {
+                // Pass the options to the authenticator and wait for a response
+                attResp = await startAuthentication(await resp.json());
+            } catch (error) {
+                console.error(error);
+                alert("Fehler beim Anmelden mit dem Passkeys! Abbruch.");
+                return;
+            }
+
+            const verifData = await fetch("/auth/login/2fa/webauthn/handle", { method: "POST", body: JSON.stringify(attResp), headers: { Authorization: "Bearer " + this.tempToken, "Content-Type": "application/json" } });
+
+            const json = await verifData.json();
+            if (json.token) {
+                this.showConfirm2FADialog = false;
+                this.account = { login: this.loginModel.login, token: json.token };
+                window.localStorage.setItem("account", JSON.stringify(this.account));
+                this.updateMounts();
+                this.updatePasskeys();
+            } else {
+                alert("Fehler beim Anmelden!");
+            }
+        },
+        async handle2FACodeLogin() {
+            const resp = await fetch("/auth/login/2fa/code", { headers: { Authorization: "Bearer " + this.tempToken }, method: "POST", body: JSON.stringify({ code: this.input2FACode }) });
+            this.input2FACode = "";
+            const json = await resp.json();
+            if (json.token) {
+                this.showConfirm2FADialog = false;
+                this.account = { login: this.loginModel.login, token: json.token };
+                window.localStorage.setItem("account", JSON.stringify(this.account));
+                this.updateMounts();
+                this.updatePasskeys();
+            } else {
+                alert("Fehler beim Anmelden!");
+            }
         }
     }
 }).use(vuetify).mount("#app")

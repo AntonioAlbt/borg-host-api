@@ -10,6 +10,9 @@
 <body>
     <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/vuetify@3.5.9/dist/vuetify.min.js"></script>
+    <script src="https://unpkg.com/@simplewebauthn/browser@9.0.1/dist/bundle/index.umd.min.js"
+        integrity="sha512-2vsz41AKD8fYpRXTF1mCEIIL6ZJfTJ/VDTgt2S+CLPXM9Rm+M2nGpuHN4x7FwkVroiIUmB/iWbtC2vI35WYIEg=="
+        crossorigin="anonymous"></script>
     <script type="module" src="main.js"></script>
     <div id="app">
         <v-layout class="rounded rounded-md">
@@ -26,79 +29,106 @@
                     <template v-if="account != null">
                         Du bist aktuell angemeldet als: {{ account.login }} <v-btn @click="handleLogoutClick" variant="tonal">Abmelden</v-btn>
 
-                        <br><br>
-                        <p>Hinzugefügte Repo-Login-Daten:</p>
-                        <ul>
-                            <li v-if="secureMountData.length == 0">keine</li>
-                            <li v-for="repo in secureMountData" :key="repo.repo">
-                                {{ repo.repo }}
-                            </li>
-                            <li>
-                                <v-btn @click="showAddRepoDataDialog = true">Hinzufügen</v-btn>
-                            </li>
-                        </ul>
-                        <v-dialog v-model="showAddRepoDataDialog" width="auto">
-                            <v-card title="Repo-Daten hinzufügen" max-width="400">
-                                <v-card-text>
-                                    Hinweis: die eingegebenen Daten können erst beim Erstellen eines Mounts überprüft werden.<br>
-                                    <v-text-field v-model="repoModel.url" label="Repo-URL (ssh://.../path)" density="compact"></v-text-field>
-                                    <v-text-field type="password" v-model="repoModel.pp" label="Repo-Passphrase" density="compact"></v-text-field>
-                                    <v-btn @click="handleAddRepoDataDialogSave">Speichern</v-btn>
-                                </v-card-text>
-                            </v-card>
-                        </v-dialog>
-                        <br>
-
-                        <p>Aktuelle Mounts:</p>
-                        <ul>
-                            <li v-if="currentMounts.length == 0">keine</li>
-                            <li v-for="mount in currentMounts" :key="mount.path">
-                                {{ mount.path }} -> {{ mount.repo }}
-                                <v-btn @click="setCurrentPath('/' + mount.path)">Anschauen</v-btn>
-                                <v-btn @click="umount(mount.path)">Umount</v-btn>
-                            </li>
-                            <li>
-                                <v-btn @click="showCreateMountDialog = true">Aktivieren</v-btn>
-                            </li>
-                        </ul>
-                        <v-dialog v-model="showCreateMountDialog" width="auto">
-                            <v-card title="Repo zum Mounten auswählen" max-width="400">
-                                <v-card-text>
-                                    <v-select :item-props="(data) => ({ title: data.repo })" :items="secureMountData" v-model="selectedRepoInfoToMount"></v-select>
-                                    <v-btn @click="handleCreateMountClick">Mounten</v-btn>
-                                </v-card-text>
-                            </v-card>
-                        </v-dialog>
-                        <div v-if="loadingMounting" style="margin-top: 12px;">
-                            <v-progress-circular indeterminate></v-progress-circular> Mount wird verarbeitet...
-                        </div>
-
-                        <div v-if="currentPath != '~'">
-                            <hr style="margin-top: 16px;">
-                            <p v-if="downloadingFiles.length > 0">Lädt aktuell herunter: {{ downloadingFiles.join(", ") }}</p>
-                            <div v-if="loadingCurrentPathData" style="margin-top: 12px;">
-                                <v-progress-circular indeterminate></v-progress-circular> Lädt Dateien...
-                            </div>
-                            <div v-else>
-                                <ul>
-                                    <li v-if="Array.from(currentPath).filter((c) => c == '/').length > 1"><v-btn @click="goUp()">nach oben</v-btn></li>
-                                    <li v-for="entry in currentPathData">
-                                        {{ entry.filename }} <span v-if="entry.file">({{ formatBytes(entry.size) }}) </span>
-                                        <v-btn v-if="entry.dir" @click="setCurrentPath('/' + entry.full_path)">CD</v-btn>
-                                        <v-btn v-if="entry.file" @click="showFile(entry.full_path, entry.size)">View</v-btn>
-                                        <v-btn v-if="entry.file" @click="downloadFile('/access/' + entry.full_path + '?gzip')">DL</v-btn>
-                                        <span v-if="entry.lnk">-> {{ entry.lnk }}</span>
-                                    </li>
-                                </ul>
-                            </div>
-                            <v-dialog v-model="showFileContentDialog" width="auto">
-                                <v-card :title="'Datei: ' + selectedFileToShow" max-width="1920">
+                        <div>
+                            <p>Registrierte Passkeys:</p>
+                            <ul>
+                                <li v-if="passkeys.length == 0">keine</li>
+                                <li v-for="passkey in passkeys">
+                                    {{ passkey.name }} <span style="font-size: small;">(ID: {{passkey.credentialID}})</span> <v-btn @click="removePasskey(passkey.credentialID)">Entfernen</v-btn>
+                                </li>
+                            </ul>
+                            <v-btn @click="handleRegisterPasskey" style="margin-top: 8px; margin-left: 8px;">Passkey registrieren</v-btn>
+                            <v-btn v-if="passkeys.length > 0" @click="show2FACode" style="margin-top: 8px; margin-left: 8px;">2FA Code anzeigen</v-btn>
+                            <v-dialog v-model="show2FACodeDialog" width="auto">
+                                <v-card title="2FA-Code" max-width="400">
                                     <v-card-text>
-                                        <code class="v-code" v-html="selectedFileContent"></code>
+                                        Aktueller Code: {{known2FACodeData.otp}} (läuft ab in {{ (known2FACodeData.expires - Date.now()) / 1000 }} s)
+                                        <v-btn @click="show2FACodeDialog = false">OK</v-btn>
                                     </v-card-text>
                                 </v-card>
                             </v-dialog>
-                        </div>
+                        </div><br/>
+
+                        <template v-if="passkeys.length > 0">
+                            <p>Hinzugefügte Repo-Login-Daten:</p>
+                            <ul>
+                                <li v-if="secureMountData.length == 0">keine</li>
+                                <li v-for="repo in secureMountData" :key="repo.repo">
+                                    {{ repo.repo }}
+                                </li>
+                                <li>
+                                    <v-btn @click="showAddRepoDataDialog = true">Hinzufügen</v-btn>
+                                </li>
+                            </ul>
+                            <v-dialog v-model="showAddRepoDataDialog" width="auto">
+                                <v-card title="Repo-Daten hinzufügen" max-width="400">
+                                    <v-card-text>
+                                        Hinweis: die eingegebenen Daten können erst beim Erstellen eines Mounts überprüft werden.<br>
+                                        <v-text-field v-model="repoModel.url" label="Repo-URL (ssh://.../path)" density="compact"></v-text-field>
+                                        <v-text-field type="password" v-model="repoModel.pp" label="Repo-Passphrase"
+                                            density="compact"></v-text-field>
+                                        <v-btn @click="handleAddRepoDataDialogSave">Speichern</v-btn>
+                                    </v-card-text>
+                                </v-card>
+                            </v-dialog>
+                            <br>
+                            
+                            <p>Aktuelle Mounts:</p>
+                            <ul>
+                                <li v-if="currentMounts.length == 0">keine</li>
+                                <li v-for="mount in currentMounts" :key="mount.path">
+                                    {{ mount.path }} -> {{ mount.repo }}
+                                    <v-btn @click="setCurrentPath('/' + mount.path)">Anschauen</v-btn>
+                                    <v-btn @click="umount(mount.path)">Umount</v-btn>
+                                </li>
+                                <li>
+                                    <v-btn @click="showCreateMountDialog = true">Aktivieren</v-btn>
+                                </li>
+                            </ul>
+                            <v-dialog v-model="showCreateMountDialog" width="auto">
+                                <v-card title="Repo zum Mounten auswählen" max-width="400">
+                                    <v-card-text>
+                                        <v-select :item-props="(data) => ({ title: data.repo })" :items="secureMountData"
+                                            v-model="selectedRepoInfoToMount"></v-select>
+                                        <v-btn @click="handleCreateMountClick">Mounten</v-btn>
+                                    </v-card-text>
+                                </v-card>
+                            </v-dialog>
+                            <div v-if="loadingMounting" style="margin-top: 12px;">
+                                <v-progress-circular indeterminate></v-progress-circular> Mount wird verarbeitet...
+                            </div>
+                            
+                            <div v-if="currentPath != '~'">
+                                <hr style="margin-top: 16px;">
+                                <p v-if="downloadingFiles.length > 0">Lädt aktuell herunter: {{ downloadingFiles.join(", ") }}</p>
+                                <div v-if="loadingCurrentPathData" style="margin-top: 12px;">
+                                    <v-progress-circular indeterminate></v-progress-circular> Lädt Dateien...
+                                </div>
+                                <div v-else>
+                                    <ul>
+                                        <li v-if="Array.from(currentPath).filter((c) => c == '/').length > 1"><v-btn @click="goUp()">nach
+                                                oben</v-btn></li>
+                                        <li v-for="entry in currentPathData">
+                                            {{ entry.filename }} <span v-if="entry.file">({{ formatBytes(entry.size) }}) </span>
+                                            <v-btn v-if="entry.dir" @click="setCurrentPath('/' + entry.full_path)">CD</v-btn>
+                                            <v-btn v-if="entry.file" @click="showFile(entry.full_path, entry.size)">View</v-btn>
+                                            <v-btn v-if="entry.file" @click="downloadFile('/access/' + entry.full_path + '?gzip')">DL</v-btn>
+                                            <span v-if="entry.lnk">-> {{ entry.lnk }}</span>
+                                        </li>
+                                    </ul>
+                                </div>
+                                <v-dialog v-model="showFileContentDialog" width="auto">
+                                    <v-card :title="'Datei: ' + selectedFileToShow" max-width="1920">
+                                        <v-card-text>
+                                            <code class="v-code" v-html="selectedFileContent"></code>
+                                        </v-card-text>
+                                    </v-card>
+                                </v-dialog>
+                            </div>
+                        </template>
+                        <template v-else>
+                            <p>Du musst einen Passkey registrieren, um auf die Hauptfunktionen zugreifen zu können!</p>
+                        </template>
                     </template>
                     <template v-else>
                         Du bist aktuell nicht angemeldet.<br><br>
@@ -115,6 +145,21 @@
                         <div v-if="loginError != null" style="margin-top: 12px;">
                             <p>Fehler bei der Anmeldung. ({{ loginError }})</p>
                         </div>
+                        <v-dialog v-model="showConfirm2FADialog" width="auto">
+                            <v-card title="2FA erforderlich!" max-width="400">
+                                <v-card-text>
+                                    <p>Bitte verwende eine 2FA-Methode, um deine Anmeldung zu bestätigen.</p>
+                                    <v-select v-model="selected2FAMethod" label="2FA-Methode" :items="['Passkey', '2FA-Code']"></v-select>
+                                    <div v-if="selected2FAMethod == 'Passkey'">
+                                        <v-btn @click="handlePasskeyLogin">Mit Passkey anmelden</v-btn>
+                                    </div>
+                                    <div v-else-if="selected2FAMethod == '2FA-Code'">
+                                        <v-text-field v-model="input2FACode" label="Code: 6 Zahlen" density="compact"></v-text-field>
+                                        <v-btn :disabled="input2FACode.length != 6 || isNaN(Number.parseInt(input2FACode))" @click="handle2FACodeLogin">Anmelden</v-btn>
+                                    </div>
+                                </v-card-text>
+                            </v-card>
+                        </v-dialog>
                     </template>
                 </div>
             </v-main>
